@@ -11,4 +11,4 @@ Vaults is a Python library providing a persistent key-value store using SQLite. 
 
 ## Installation
 
-pip install -e git+https://github.com/JingoBongo/vaults#egg=vaults
+pip install git+https://github.com/JingoBongo/vaults#egg=vaults
