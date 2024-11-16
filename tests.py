@@ -40,6 +40,21 @@ class TestVault(unittest.TestCase):
         self.assertIsNone(result)
         popped = self.vault.pop('nonexistent_key')
         self.assertIsNone(popped)
+        
+    def test_list_keys(self):
+        """Test listing all keys."""
+        keys_to_add = {'key1': 'value1', 'key2': 'value2', 'key3': 'value3'}
+        for key, value in keys_to_add.items():
+            self.vault.put(key, value)
+
+        keys = self.vault.list_keys()
+        self.assertCountEqual(keys, keys_to_add.keys())  # Ensure all keys are present
+
+        # Verify empty vault
+        for key in keys_to_add:
+            self.vault.pop(key)
+        keys_after_pop = self.vault.list_keys()
+        self.assertEqual(keys_after_pop, [])
 
 if __name__ == '__main__':
     unittest.main()

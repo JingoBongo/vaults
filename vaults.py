@@ -184,3 +184,28 @@ class Vault:
             The associated value, or None if the key doesn't exist.
         """
         return asyncio.run(self.__pop__(key))
+
+
+    async def __list_keys__(self):
+        """
+        Asynchronous helper to list all keys stored in the vault.
+        
+        Returns:
+            A list of all keys in the vault.
+        """
+        log.debug(f"Listing all keys in vault '{self.vault_name}'.")
+        async with self.__session__() as session:
+            result = await session.execute(select(DictEntry.key))
+            keys = [pickle.loads(row[0]) for row in result.fetchall()]
+            return keys
+
+    def list_keys(self):
+        """
+        Retrieve a list of all keys in the vault.
+        
+        Returns:
+            A list of all keys.
+        """
+        keys = asyncio.run(self.__list_keys__())
+        log.info(f"Listed {len(keys)} keys from vault '{self.vault_name}'.")
+        return keys
