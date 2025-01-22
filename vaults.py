@@ -85,22 +85,19 @@ class Vault:
         elif not path_exists and not to_create:
             log.error(f"No such vault: '{vault_name}'!")
 
-    def execute_in_new_loop(self, func, *args, **kwargs):
+    def execute_in_loop(self, func, *args, **kwargs):
         """
-        Execute a function in a new event loop.
-
-        Args:
-            func: The function to
-            execute.
-            *args: Positional arguments to pass to the function.
-            **kwargs: Keyword arguments to pass to the function.
-            Returns:
-            The result of the function execution.
+        Runs an async coroutine in a synchronous context.
+        Handles cases where an event loop already exists.
+        Supports passing arguments and returns the result.
         """
-        loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(func(*args, **kwargs))
-        loop.close()
-        return result
+        try:
+            # If there's an active event loop, use `run_until_complete`.
+            loop = asyncio.get_running_loop()
+            return loop.run_until_complete(func(*args, **kwargs))
+        except RuntimeError:  # No active loop
+            # If no loop is running, create one with `asyncio.run`.
+            return asyncio.run(func(*args, **kwargs))
 
     async def __create_table__(self):
         """
@@ -137,7 +134,7 @@ class Vault:
             value: The value to associate with the key.
         """
 
-        self.execute_in_new_loop(self.__put__, key, value)
+        self.execute_in_loop(self.__put__, key, value)
 
         log.info(f"Key '{key}' stored in vault.")
 
@@ -164,7 +161,7 @@ class Vault:
             The associated value, or None if the key doesn't exist.
         """
 
-        value = self.execute_in_new_loop(self.__get__, key)
+        value = self.execute_in_loop(self.__get__, key)
 
         if value is not None:
             log.info(f"Retrieved key '{key}' from vault.")
@@ -188,7 +185,7 @@ class Vault:
         Delete the vault database file and close connections.
         """
 
-        self.execute_in_new_loop(self.__delete_vault__)
+        self.execute_in_loop(self.__delete_vault__)
 
         log.info(f"Vault '{self.vault_name}' deleted successfully.")
 
@@ -221,7 +218,7 @@ class Vault:
             The associated value, or None if the key doesn't exist.
         """
 
-        value = self.execute_in_new_loop(self.__pop__, key)
+        value = self.execute_in_loop(self.__pop__, key)
         log.info(f"Key '{key}' popped from vault.")
         return value
 
@@ -246,7 +243,7 @@ class Vault:
             A list of all keys.
         """
 
-        keys = self.execute_in_new_loop(self.__list_keys__)
+        keys = self.execute_in_loop(self.__list_keys__)
 
         log.info(f"Listed {len(keys)} keys from vault '{self.vault_name}'.")
         return keys
