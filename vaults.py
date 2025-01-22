@@ -1,6 +1,7 @@
 import asyncio
 import os
 import pickle
+from typing import Callable, Any
 from sqlalchemy import Column, LargeBinary, BINARY, select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
@@ -84,6 +85,18 @@ class Vault:
             asyncio.run(self.__create_table__())
         elif not path_exists and not to_create:
             log.error(f"No such vault: '{vault_name}'!")
+            
+            
+    def sync_wrapper(async_func: Callable[..., Any]):
+        def wrapper(*args, **kwargs):
+            try:
+                loop = asyncio.get_running_loop()
+                # Use existing event loop
+                return asyncio.run_coroutine_threadsafe(async_func(*args, **kwargs), loop).result()
+            except RuntimeError:
+                # Create and use a new event loop if none exists
+                return asyncio.run(async_func(*args, **kwargs))
+        return wrapper
 
     def execute_in_loop(self, func, *args, **kwargs):
         """
@@ -116,7 +129,8 @@ class Vault:
         async with self.__engine__.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    async def __put__(self, key, value):
+    @sync_wrapper
+    async def put(self, key, value):
         """
         Asynchronous helper to insert or update a key-value pair in the database.
         """
@@ -134,20 +148,21 @@ class Vault:
                     session.add(new_data)
                     log.debug(f"Inserted new key: {key}.")
 
-    def put(self, key, value):
-        """
-        Insert or update a key-value pair in the database.
+    # def put(self, key, value):
+    #     """
+    #     Insert or update a key-value pair in the database.
 
-        Args:
-            key: The key for the data.
-            value: The value to associate with the key.
-        """
+    #     Args:
+    #         key: The key for the data.
+    #         value: The value to associate with the key.
+    #     """
 
-        self.execute_in_loop(self.__put__, key, value)
+    #     self.execute_in_loop(self.__put__, key, value)
 
-        log.info(f"Key '{key}' stored in vault.")
+    #     log.info(f"Key '{key}' stored in vault.")
 
-    async def __get__(self, key):
+    @sync_wrapper
+    async def get(self, key):
         """
         Asynchronous helper to retrieve a value by its key.
         """
@@ -159,26 +174,27 @@ class Vault:
             data = result.scalar_one_or_none()
             return pickle.loads(data.value) if data else None
 
-    def get(self, key):
-        """
-        Retrieve a value by its key.
+    # def get(self, key):
+    #     """
+    #     Retrieve a value by its key.
 
-        Args:
-            key: The key to retrieve.
+    #     Args:
+    #         key: The key to retrieve.
 
-        Returns:
-            The associated value, or None if the key doesn't exist.
-        """
+    #     Returns:
+    #         The associated value, or None if the key doesn't exist.
+    #     """
 
-        value = self.execute_in_loop(self.__get__, key)
+    #     value = self.execute_in_loop(self.__get__, key)
 
-        if value is not None:
-            log.info(f"Retrieved key '{key}' from vault.")
-        else:
-            log.warning(f"Key '{key}' not found in vault.")
-        return value
+    #     if value is not None:
+    #         log.info(f"Retrieved key '{key}' from vault.")
+    #     else:
+    #         log.warning(f"Key '{key}' not found in vault.")
+    #     return value
 
-    async def __delete_vault__(self):
+    @sync_wrapper
+    async def delete_vault(self):
         """
         Asynchronous helper to delete the database and close connections.
         """
@@ -189,16 +205,17 @@ class Vault:
         else:
             log.warning(f"Vault '{self.vault_name}' does not exist.")
 
-    def delete_vault(self):
-        """
-        Delete the vault database file and close connections.
-        """
+    # def delete_vault(self):
+    #     """
+    #     Delete the vault database file and close connections.
+    #     """
 
-        self.execute_in_loop(self.__delete_vault__)
+    #     self.execute_in_loop(self.__delete_vault__)
 
-        log.info(f"Vault '{self.vault_name}' deleted successfully.")
+    #     log.info(f"Vault '{self.vault_name}' deleted successfully.")
 
-    async def __pop__(self, key):
+    @sync_wrapper
+    async def pop(self, key):
         """
         Asynchronous helper to retrieve and remove a key-value pair from the database.
         """
@@ -211,27 +228,28 @@ class Vault:
                 data = result.scalar_one_or_none()
                 if data:
                     await session.delete(data)
-                    log.info(f"Key '{key}' removed from vault.")
+                    log.info(f"Key '{key}' poppped from vault.")
                     return pickle.loads(data.value)
                 log.warning(f"Key '{key}' not found for pop operation.")
                 return None
 
-    def pop(self, key):
-        """
-        Retrieve and remove a key-value pair from the database.
+    # def pop(self, key):
+    #     """
+    #     Retrieve and remove a key-value pair from the database.
 
-        Args:
-            key: The key to pop.
+    #     Args:
+    #         key: The key to pop.
 
-        Returns:
-            The associated value, or None if the key doesn't exist.
-        """
+    #     Returns:
+    #         The associated value, or None if the key doesn't exist.
+    #     """
 
-        value = self.execute_in_loop(self.__pop__, key)
-        log.info(f"Key '{key}' popped from vault.")
-        return value
+    #     value = self.execute_in_loop(self.__pop__, key)
+    #     log.info(f"Key '{key}' popped from vault.")
+    #     return value
 
-    async def __list_keys__(self):
+    @sync_wrapper
+    async def list_keys(self):
         """
         Asynchronous helper to list all keys stored in the vault.
 
@@ -242,17 +260,18 @@ class Vault:
         async with self.__session__() as session:
             result = await session.execute(select(DictEntry.key))
             keys = [pickle.loads(row[0]) for row in result.fetchall()]
+            log.info(f"Listed {len(keys)} keys from vault '{self.vault_name}'.")
             return keys
 
-    def list_keys(self):
-        """
-        Retrieve a list of all keys in the vault.
+    # def list_keys(self):
+    #     """
+    #     Retrieve a list of all keys in the vault.
 
-        Returns:
-            A list of all keys.
-        """
+    #     Returns:
+    #         A list of all keys.
+    #     """
 
-        keys = self.execute_in_loop(self.__list_keys__)
+    #     keys = self.execute_in_loop(self.__list_keys__)
 
-        log.info(f"Listed {len(keys)} keys from vault '{self.vault_name}'.")
-        return keys
+    #     log.info(f"Listed {len(keys)} keys from vault '{self.vault_name}'.")
+    #     return keys
