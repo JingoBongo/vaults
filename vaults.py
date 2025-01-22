@@ -94,7 +94,8 @@ class Vault:
         try:
             # If there's an active event loop, use `run_until_complete`.
             loop = asyncio.get_running_loop()
-            return loop.run_until_complete(func(*args, **kwargs))
+            future = asyncio.ensure_future(func(*args, **kwargs))
+            return loop.run_until_complete(future)
         except RuntimeError:  # No active loop
             # If no loop is running, create one with `asyncio.run`.
             return asyncio.run(func(*args, **kwargs))
