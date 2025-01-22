@@ -87,18 +87,27 @@ class Vault:
 
     def execute_in_loop(self, func, *args, **kwargs):
         """
-        Runs an async coroutine in a synchronous context.
-        Handles cases where an event loop already exists.
-        Supports passing arguments and returns the result.
+        Executes an async function in both sync and async contexts.
+        Handles existing event loops and no-loop scenarios.
+        
+        Args:
+            func (coroutine): The async function to execute.
+            *args: Positional arguments for the async function.
+            **kwargs: Keyword arguments for the async function.
+
+        Returns:
+            The result of the async function.
         """
         try:
-            # If there's an active event loop, use `run_until_complete`.
+            # Check if there's an existing event loop
             loop = asyncio.get_running_loop()
-            future = asyncio.ensure_future(func(*args, **kwargs))
-            return loop.run_until_complete(future)
-        except RuntimeError:  # No active loop
-            # If no loop is running, create one with `asyncio.run`.
+        except RuntimeError:
+            # If no loop is running, create and manage one
             return asyncio.run(func(*args, **kwargs))
+        
+        # If an event loop exists, schedule the coroutine safely
+        future = asyncio.run_coroutine_threadsafe(func(*args, **kwargs), loop)
+        return future.result()
 
     async def __create_table__(self):
         """
