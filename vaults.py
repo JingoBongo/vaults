@@ -86,7 +86,7 @@ class Vault:
         async with self.__engine__.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
-    async def __put_by_key__(self, key, value):
+    async def __put__(self, key, value):
         """
         Asynchronous helper to insert or update a key-value pair in the database.
         """
@@ -110,10 +110,10 @@ class Vault:
             key: The key for the data.
             value: The value to associate with the key.
         """
-        asyncio.run(self.__put_by_key__(key, value))
+        asyncio.run(self.__put__(key, value))
         log.info(f"Key '{key}' stored in vault.")
 
-    async def __get_by_key__(self, key):
+    async def __get__(self, key):
         """
         Asynchronous helper to retrieve a value by its key.
         """
@@ -133,7 +133,7 @@ class Vault:
         Returns:
             The associated value, or None if the key doesn't exist.
         """
-        value = asyncio.run(self.__get_by_key__(key))
+        value = asyncio.run(self.__get__(key))
         if value is not None:
             log.info(f"Retrieved key '{key}' from vault.")
         else:
