@@ -89,7 +89,7 @@ class Vault:
         """
         Executes an async function in both sync and async contexts.
         Handles existing event loops and no-loop scenarios.
-        
+
         Args:
             func (coroutine): The async function to execute.
             *args: Positional arguments for the async function.
@@ -101,13 +101,12 @@ class Vault:
         try:
             # Check if there's an existing event loop
             loop = asyncio.get_running_loop()
+            # Schedule coroutine to run in the existing loop and wait for the result
+            future = asyncio.ensure_future(func(*args, **kwargs))
+            return asyncio.run_coroutine_threadsafe(future, loop).result()
         except RuntimeError:
             # If no loop is running, create and manage one
             return asyncio.run(func(*args, **kwargs))
-        
-        # If an event loop exists, schedule the coroutine safely
-        future = asyncio.run_coroutine_threadsafe(func(*args, **kwargs), loop)
-        return future.result()
 
     async def __create_table__(self):
         """
