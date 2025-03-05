@@ -12,8 +12,7 @@ setup(
     py_modules=['vaults'],
     packages=find_packages(),
     install_requires=[
-        'SQLAlchemy',
-        'aiosqlite'
+        'SQLAlchemy'
     ],
     classifiers=[
         'Programming Language :: Python :: 3.9',

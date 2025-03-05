@@ -57,63 +57,7 @@ class TestVault(unittest.TestCase):
         keys_after_pop = self.vault.list_keys()
         self.assertEqual(keys_after_pop, [])
         
-class TestAsyncVault(unittest.TestCase):
-    def setUp(self):
-        self.vault_name = 'async_test_vault'
-        self.vault = Vault(self.vault_name)
-        
-    def tearDown(self):
-        self.vault.delete_vault()
 
-    def test_async_put_and_get(self):
-        async def run_test():
-            await self.vault.__put__('key1', 'value1')
-            result = await self.vault.__get__('key1')
-            return result
-            
-        result = asyncio.run(run_test())
-        self.assertEqual(result, 'value1')
-
-    def test_async_pop(self):
-        async def run_test():
-            await self.vault.__put__('key2', 'value2')
-            popped = await self.vault.__pop__('key2')
-            remaining = await self.vault.__get__('key2')
-            return popped, remaining
-            
-        popped, remaining = asyncio.run(run_test())
-        self.assertEqual(popped, 'value2')
-        self.assertIsNone(remaining)
-
-    def test_async_list_keys(self):
-        async def run_test():
-            test_data = {'key1': 'value1', 'key2': 'value2', 'key3': 'value3'}
-            for key, value in test_data.items():
-                await self.vault.__put__(key, value)
-            
-            keys = await self.vault.__list_keys__()
-            return keys, test_data.keys()
-            
-        keys, expected_keys = asyncio.run(run_test())
-        self.assertCountEqual(keys, expected_keys)
-
-    def test_async_delete_vault(self):
-        async def run_test():
-            await self.vault.__put__('test_key', 'test_value')
-            db_path = self.vault.db_path
-            await self.vault.__delete_vault__()
-            return db_path
-            
-        db_path = asyncio.run(run_test())
-        self.assertFalse(os.path.exists(db_path))
-
-    def test_async_non_existent_key(self):
-        async def run_test():
-            result = await self.vault.__get__('nonexistent')
-            return result
-            
-        result = asyncio.run(run_test())
-        self.assertIsNone(result)
 
 if __name__ == '__main__':
     unittest.main()
