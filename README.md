@@ -14,6 +14,8 @@ Vaults is a Python library providing a persistent key-value store using SQLite. 
 *the async library needs python 3.9 or above*
 
 pip install git+https://github.com/JingoBongo/vaults#egg=vaults
+or
+pip install git+http://192.168.0.2:9999/mscebec/vaults#egg=vaults
 
 *using -e flag with pip install will install library in local folder for further modifications*
 
