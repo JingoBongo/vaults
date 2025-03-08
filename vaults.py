@@ -86,10 +86,11 @@ class Vault:
         return value
 
     def get_all_items(self):
-        # Bulk fetch all rows
+        # Bulk fetch all rows using scalars() for reliability.
         with self.__session__() as session:
-            result = session.execute(select(DictEntry))
-            return [pickle.loads(row[0].value) for row in result.fetchall()]
+            entries = session.scalars(select(DictEntry)).all()
+            log.info("Fetched %d entries from vault '%s'", len(entries), self.vault_name)
+            return [pickle.loads(entry.value) for entry in entries]
 
     def __delete_vault__(self):
         self.__engine__.dispose()
