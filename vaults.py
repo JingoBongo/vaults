@@ -1,11 +1,8 @@
-import os
-import pickle
-import logging
+import os, pickle, logging
 from logging.handlers import RotatingFileHandler
 from sqlalchemy import Column, LargeBinary, BINARY, select, create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
-# Logger setup
 log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 handler = RotatingFileHandler("vaults.log", maxBytes=10 * 1024 * 1024, backupCount=5)
 handler.setFormatter(log_formatter)
@@ -38,7 +35,6 @@ class Vault:
     def __init__(self, vault_name: str, to_create: bool = True):
         os.makedirs(vaults_folder, exist_ok=True)
         self.vault_name = vault_name
-        # Using vaults_folder directly since it already contains root_path
         self.db_path = os.path.join(vaults_folder, f"{vault_name}.db")
         path_exists = os.path.exists(self.db_path)
         if path_exists or to_create:
@@ -88,6 +84,12 @@ class Vault:
         else:
             log.warning(f"Key '{key}' not found in vault.")
         return value
+
+    def get_all_items(self):
+        # Bulk fetch all rows
+        with self.__session__() as session:
+            result = session.execute(select(DictEntry))
+            return [pickle.loads(row[0].value) for row in result.fetchall()]
 
     def __delete_vault__(self):
         self.__engine__.dispose()
