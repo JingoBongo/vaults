@@ -4,7 +4,7 @@ from sqlalchemy import Column, LargeBinary, BINARY, select, create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 
 log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-handler = RotatingFileHandler("vaults.log", maxBytes=10 * 1024 * 1024, backupCount=5)
+handler = RotatingFileHandler("vaults.log", maxBytes=10 * 1024 * 1024)
 handler.setFormatter(log_formatter)
 log = logging.getLogger("Fus3")
 log.setLevel(logging.DEBUG)
