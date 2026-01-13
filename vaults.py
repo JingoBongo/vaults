@@ -1,21 +1,29 @@
-import os, pickle, logging
+import os
+import pickle
+import sqlite3
+import threading
+import logging
 from logging.handlers import RotatingFileHandler
-from sqlalchemy import Column, LargeBinary, BINARY, select, create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from typing import Any, Iterator, List, Tuple, Optional, Dict
+
+try:
+    import msgpack
+    MSGPACK_AVAILABLE = True
+except ImportError:
+    MSGPACK_AVAILABLE = False
 
 log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 handler = RotatingFileHandler("vaults.log", maxBytes=10 * 1024 * 1024)
 handler.setFormatter(log_formatter)
-log = logging.getLogger("Fus3")
+log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 log.addHandler(handler)
 
 root_path = os.path.dirname(os.path.abspath(__file__))
 vaults_folder = os.path.join(root_path, "vaults")
-Base = declarative_base()
 
 
-def set_root_path(path: str):
+def set_root_path(path: str) -> None:
     global root_path, vaults_folder
     root_path = path
     vaults_folder = os.path.join(root_path, "vaults")
@@ -23,113 +31,240 @@ def set_root_path(path: str):
     log.info(f"Root path set to: {root_path}, vaults folder: {vaults_folder}")
 
 
-class DictEntry(Base):
-    __tablename__ = "dict"
-    key = Column(BINARY, primary_key=True, nullable=False)
-    value = Column(LargeBinary)
+def _try_msgpack_serialize(obj: Any) -> Optional[bytes]:
+    if not MSGPACK_AVAILABLE:
+        return None
+    try:
+        return msgpack.packb(obj, use_bin_type=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialize(obj: Any) -> bytes:
+    packed = _try_msgpack_serialize(obj)
+    if packed is not None:
+        return b'M' + packed
+    return b'P' + pickle.dumps(obj)
+
+
+def _deserialize(data: bytes) -> Any:
+    if not data:
+        return None
+    marker = data[0:1]
+    if marker == b'M':
+        if not MSGPACK_AVAILABLE:
+            raise RuntimeError("msgpack not available but data is msgpack format")
+        return msgpack.unpackb(data[1:], raw=False)
+    elif marker == b'P':
+        return pickle.loads(data[1:])
+    raise ValueError(f"Unknown serialization format marker: {marker}")
+
+
+class VaultError(Exception):
+    pass
 
 
 class Vault:
-    __slots__ = {"vault_name", "db_path", "__engine__", "__session__"}
+    __slots__ = {"vault_name", "db_path", "_connection", "_thread_safe", "_lock"}
 
-    def __init__(self, vault_name: str, to_create: bool = True):
+    def __init__(self, vault_name: str, to_create: bool = True, thread_safe: bool = False) -> None:
         os.makedirs(vaults_folder, exist_ok=True)
         self.vault_name = vault_name
         self.db_path = os.path.join(vaults_folder, f"{vault_name}.db")
+        self._thread_safe = thread_safe
+        self._lock = threading.RLock() if thread_safe else None
+
         path_exists = os.path.exists(self.db_path)
         if path_exists or to_create:
-            db_url = f"sqlite:///{self.db_path}"
-            self.__engine__ = create_engine(db_url, echo=False, future=True)
-            self.__session__ = sessionmaker(bind=self.__engine__, class_=Session, expire_on_commit=False)
+            self._connection = sqlite3.connect(self.db_path, check_same_thread=not thread_safe)
+            self._connection.isolation_level = None
+        else:
+            log.error(f"No such vault: '{vault_name}'!")
+            raise VaultError(f"Vault '{vault_name}' does not exist")
+
         if to_create and not path_exists:
             log.info(f"Creating vault '{vault_name}'!")
-            self.__create_table__()
+            self._create_table()
         elif not path_exists and not to_create:
             log.error(f"No such vault: '{vault_name}'!")
+            raise VaultError(f"Vault '{vault_name}' does not exist")
 
-    def __create_table__(self):
+    def _create_table(self) -> None:
         log.debug("Creating table in the database.")
-        with self.__engine__.begin() as conn:
-            Base.metadata.create_all(conn)
+        try:
+            self._execute("CREATE TABLE IF NOT EXISTS dict (key BLOB PRIMARY KEY, value BLOB)")
+        except sqlite3.Error as e:
+            log.error(f"Failed to create table: {e}")
+            raise VaultError(f"Failed to create table: {e}")
 
-    def __put__(self, key, value):
+    def _execute(self, query: str, params: tuple = ()) -> sqlite3.Cursor:
+        try:
+            cursor = self._connection.cursor()
+            cursor.execute(query, params)
+            return cursor
+        except sqlite3.Error as e:
+            log.error(f"Database error: {e}")
+            raise VaultError(f"Database error: {e}")
+
+    def _execute_with_lock(self, query: str, params: tuple = (())[0:0]) -> sqlite3.Cursor:
+        if self._lock:
+            with self._lock:
+                return self._execute(query, params)
+        return self._execute(query, params)
+
+    def _put(self, key: Any, value: Any) -> None:
         log.debug(f"Putting key: {key} into vault.")
-        with self.__session__() as session:
-            with session.begin():
-                pickled_key = pickle.dumps(key)
-                existing_data = session.get(DictEntry, pickled_key)
-                if existing_data:
-                    existing_data.value = pickle.dumps(value)
-                    log.debug(f"Updated value for key: {key}.")
-                else:
-                    new_data = DictEntry(key=pickled_key, value=pickle.dumps(value))
-                    session.add(new_data)
-                    log.debug(f"Inserted new key: {key}.")
+        serialized_key = _serialize(key)
+        serialized_value = _serialize(value)
+        try:
+            self._execute_with_lock(
+                "INSERT OR REPLACE INTO dict (key, value) VALUES (?, ?)",
+                (serialized_key, serialized_value)
+            )
+        except VaultError:
+            raise
 
-    def put(self, key, value):
-        self.__put__(key, value)
-        log.info(f"Key '{key}' stored in vault.")
+    def put(self, key: Any, value: Any) -> None:
+        self._put(key, value)
+        log.info(f"Key stored in vault.")
 
-    def __get__(self, key):
+    def _get(self, key: Any) -> Optional[Any]:
         log.debug(f"Retrieving key: {key} from vault.")
-        with self.__session__() as session:
-            result = session.execute(select(DictEntry).where(DictEntry.key == pickle.dumps(key)))
-            data = result.scalar_one_or_none()
-            return pickle.loads(data.value) if data else None
+        serialized_key = _serialize(key)
+        cursor = self._execute("SELECT value FROM dict WHERE key = ?", (serialized_key,))
+        row = cursor.fetchone()
+        return _deserialize(row[0]) if row else None
 
-    def get(self, key):
-        value = self.__get__(key)
+    def get(self, key: Any, default: Any = None) -> Any:
+        value = self._get(key)
         if value is not None:
-            log.info(f"Retrieved key '{key}' from vault.")
+            log.info(f"Retrieved key from vault.")
         else:
-            log.warning(f"Key '{key}' not found in vault.")
+            log.warning(f"Key not found in vault, returning default.")
+            value = default
         return value
 
-    def get_all_items(self):
-        # Bulk fetch all rows using scalars() for reliability.
-        with self.__session__() as session:
-            entries = session.scalars(select(DictEntry)).all()
-            log.info("Fetched %d entries from vault '%s'", len(entries), self.vault_name)
-            return [pickle.loads(entry.value) for entry in entries]
+    def _pop(self, key: Any) -> Optional[Any]:
+        log.debug(f"Popping key: {key} from vault.")
+        serialized_key = _serialize(key)
+        cursor = self._execute("SELECT value FROM dict WHERE key = ?", (serialized_key,))
+        row = cursor.fetchone()
+        if row:
+            value = _deserialize(row[0])
+            self._execute("DELETE FROM dict WHERE key = ?", (serialized_key,))
+            log.info(f"Key removed from vault.")
+            return value
+        log.warning(f"Key not found for pop operation.")
+        return None
 
-    def __delete_vault__(self):
-        self.__engine__.dispose()
+    def pop(self, key: Any) -> Optional[Any]:
+        value = self._pop(key)
+        return value
+
+    def popitem(self) -> Tuple[Any, Any]:
+        log.debug(f"Popping arbitrary item from vault.")
+        cursor = self._execute("SELECT key, value FROM dict LIMIT 1")
+        row = cursor.fetchone()
+        if row:
+            key = _deserialize(row[0])
+            value = _deserialize(row[1])
+            self._execute("DELETE FROM dict WHERE key = ?", (row[0],))
+            log.info(f"Popped item from vault.")
+            return (key, value)
+        raise VaultError("popitem(): dictionary is empty")
+
+    def delete_vault(self) -> None:
+        log.info(f"Deleting vault '{self.vault_name}'.")
+        if self._connection:
+            self._connection.close()
         if os.path.exists(self.db_path):
             os.remove(self.db_path)
             log.info(f"Vault '{self.vault_name}' deleted successfully.")
         else:
             log.warning(f"Vault '{self.vault_name}' does not exist.")
 
-    def delete_vault(self):
-        self.__delete_vault__()
-        log.info(f"Vault '{self.vault_name}' deleted successfully.")
+    def clear(self) -> None:
+        log.debug(f"Clearing all entries from vault '{self.vault_name}'.")
+        self._execute("DELETE FROM dict")
 
-    def __pop__(self, key):
-        log.debug(f"Popping key: {key} from vault.")
-        with self.__session__() as session:
-            with session.begin():
-                result = session.execute(select(DictEntry).where(DictEntry.key == pickle.dumps(key)))
-                data = result.scalar_one_or_none()
-                if data:
-                    session.delete(data)
-                    log.info(f"Key '{key}' removed from vault.")
-                    return pickle.loads(data.value)
-                log.warning(f"Key '{key}' not found for pop operation.")
-                return None
-
-    def pop(self, key):
-        value = self.__pop__(key)
-        log.info(f"Key '{key}' popped from vault.")
-        return value
-
-    def __list_keys__(self):
+    def _list_keys(self) -> List[Any]:
         log.debug(f"Listing all keys in vault '{self.vault_name}'.")
-        with self.__session__() as session:
-            result = session.execute(select(DictEntry.key))
-            keys = [pickle.loads(row[0]) for row in result.fetchall()]
-            return keys
+        cursor = self._execute("SELECT key FROM dict")
+        return [_deserialize(row[0]) for row in cursor.fetchall()]
 
-    def list_keys(self):
-        keys = self.__list_keys__()
+    def list_keys(self) -> List[Any]:
+        keys = self._list_keys()
         log.info(f"Listed {len(keys)} keys from vault '{self.vault_name}'.")
         return keys
+
+    def get_all_items(self) -> List[Tuple[Any, Any]]:
+        log.debug(f"Fetching all items from vault '{self.vault_name}'.")
+        cursor = self._execute("SELECT key, value FROM dict")
+        return [(_deserialize(row[0]), _deserialize(row[1])) for row in cursor.fetchall()]
+
+    def __getitem__(self, key: Any) -> Any:
+        value = self._get(key)
+        if value is None:
+            raise KeyError(key)
+        return value
+
+    def __setitem__(self, key: Any, value: Any) -> None:
+        self._put(key, value)
+
+    def __delitem__(self, key: Any) -> None:
+        serialized_key = _serialize(key)
+        cursor = self._execute("SELECT 1 FROM dict WHERE key = ?", (serialized_key,))
+        if not cursor.fetchone():
+            raise KeyError(key)
+        self._execute("DELETE FROM dict WHERE key = ?", (serialized_key,))
+        log.info(f"Key deleted from vault.")
+
+    def __contains__(self, key: Any) -> bool:
+        serialized_key = _serialize(key)
+        cursor = self._execute("SELECT 1 FROM dict WHERE key = ? LIMIT 1", (serialized_key,))
+        return cursor.fetchone() is not None
+
+    def __len__(self) -> int:
+        cursor = self._execute("SELECT COUNT(*) FROM dict")
+        return cursor.fetchone()[0]
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self._list_keys())
+
+    def __bool__(self) -> bool:
+        cursor = self._execute("SELECT 1 FROM dict LIMIT 1")
+        return cursor.fetchone() is not None
+
+    def __repr__(self) -> str:
+        items = list(self.get_all_items())
+        return f"Vault('{self.vault_name}', {len(items)} items)"
+
+    def keys(self) -> List[Any]:
+        return self._list_keys()
+
+    def values(self) -> List[Any]:
+        log.debug(f"Fetching all values from vault '{self.vault_name}'.")
+        cursor = self._execute("SELECT value FROM dict")
+        return [_deserialize(row[0]) for row in cursor.fetchall()]
+
+    def items(self) -> List[Tuple[Any, Any]]:
+        return self.get_all_items()
+
+    def update(self, other: Dict[Any, Any]) -> None:
+        for key, value in other.items():
+            self._put(key, value)
+
+    def setdefault(self, key: Any, default: Any = None) -> Any:
+        serialized_key = _serialize(key)
+        cursor = self._execute("SELECT value FROM dict WHERE key = ?", (serialized_key,))
+        row = cursor.fetchone()
+        if row:
+            return _deserialize(row[0])
+        self._put(key, default)
+        return default
+
+    def __enter__(self) -> "Vault":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._connection.commit()
