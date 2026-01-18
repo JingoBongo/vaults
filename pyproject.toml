@@ -38,6 +38,9 @@ dev = [
     "pytest>=7.0.0",
 ]
 
+[tool.setuptools]
+py-modules = ["vaults"]
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["vaults*"]
+exclude = ["vaults.tests"]
