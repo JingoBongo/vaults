@@ -16,13 +16,13 @@ A persistent key-value store using SQLite with a dict-like interface. Fast, simp
 ## Installation
 
 ```bash
-pip install vaults
+pip install git+https://github.com/mscebec/vaults.git
 ```
 
 Or for development with editable install:
 
 ```bash
-pip install -e .
+pip install -e git+https://github.com/mscebec/vaults.git
 ```
 
 ## Quick Start
