@@ -9,18 +9,20 @@ A persistent key-value store using SQLite with a dict-like interface. Fast, simp
 - **Fast serialization** - Uses msgpack for most types, falls back to pickle
 - **No external dependencies** - Only msgpack (optional performance boost)
 - **Thread-safe option** - Enable with `thread_safe=True`
+- **Bulk operations** - Efficient `put_many()`, `get_many()`, `pop_many()`, `has_keys()`
+- **Custom logging** - Integrate with your application's logger via `set_logger()`
 - **Full dict protocol** - Supports `len()`, `in`, iteration, `keys()`, `values()`, `items()`, and more
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/JingoBongo/vaults#egg=vaults
+pip install vaults
 ```
 
 Or for development with editable install:
 
 ```bash
-pip install -e git+https://github.com/JingoBongo/vaults#egg=vaults
+pip install -e .
 ```
 
 ## Quick Start
@@ -80,6 +82,15 @@ Vault(name, to_create=True, thread_safe=False)
 | `delete_vault()` | `vault.delete_vault()` | Delete the vault file |
 | `clear()` | `vault.clear()` | Remove all entries |
 
+### Bulk Operations
+
+| Method | Syntax | Description |
+|--------|--------|-------------|
+| `put_many(data)` | `vault.put_many({'k': 'v'})` | Bulk insert/update, returns count |
+| `get_many(keys)` | `vault.get_many(['a', 'b'])` | Bulk fetch, returns dict |
+| `pop_many(keys)` | `vault.pop_many(['a', 'b'])` | Bulk remove, returns dict |
+| `has_keys(keys)` | `vault.has_keys(['a', 'b'])` | Check if all keys exist (bool) |
+
 ### Dictionary Protocol
 
 | Method | Syntax | Description |
@@ -105,13 +116,29 @@ with Vault('data') as v:
 # Auto-commits on exit
 ```
 
+### Custom Logging
+
+Vaults has its own logger by default. To integrate with your application's logger:
+
+```python
+import logging
+from vaults import set_logger
+
+my_logger = logging.getLogger('vaults')
+set_logger(my_logger)
+```
+
+Now all vault operations will log through your configured logger.
+
 ## Serialization
 
 Vaults uses **msgpack** for maximum performance on supported types:
 
 - `None`, `bool`, `int`, `float`, `str`
 - `bytes`, `bytearray`
-- `list`, `tuple`, `dict`, `set`, `frozenset`
+- `list`, `dict`, `set`, `frozenset`
+
+**Note:** Tuples are stored but returned as lists when retrieved.
 
 For unsupported types (custom classes, etc.), it **falls back to pickle** automatically.
 

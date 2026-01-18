@@ -5,7 +5,7 @@ import shutil
 import threading
 import time
 import importlib.util
-spec = importlib.util.spec_from_file_location("vaults_module", "vaults.py")
+spec = importlib.util.spec_from_file_location("vaults_module", "vault.py")
 vaults = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vaults)
 Vault = vaults.Vault
@@ -363,6 +363,208 @@ class TestVaultEdgeCases(unittest.TestCase):
         self.assertEqual(v['Key'], 'upper')
         self.assertEqual(v['key'], 'lower')
         self.assertEqual(len(v), 2)
+
+
+class TestVaultBulkOperations(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+        set_root_path(self.test_dir)
+        self.vault = Vault('bulk_test')
+
+    def tearDown(self):
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+
+    def test_put_many_basic(self):
+        data = {'a': 1, 'b': 2, 'c': 3}
+        count = self.vault.put_many(data)
+        self.assertEqual(count, 3)
+        self.assertEqual(self.vault['a'], 1)
+        self.assertEqual(self.vault['b'], 2)
+        self.assertEqual(self.vault['c'], 3)
+
+    def test_put_many_empty(self):
+        count = self.vault.put_many({})
+        self.assertEqual(count, 0)
+        self.assertEqual(len(self.vault), 0)
+
+    def test_put_many_overwrite(self):
+        self.vault['a'] = 'original'
+        data = {'a': 'updated', 'b': 'new'}
+        count = self.vault.put_many(data)
+        self.assertEqual(count, 2)
+        self.assertEqual(self.vault['a'], 'updated')
+        self.assertEqual(self.vault['b'], 'new')
+        self.assertEqual(len(self.vault), 2)
+
+    def test_put_many_large_batch(self):
+        data = {f'key_{i}': f'value_{i}' for i in range(100)}
+        count = self.vault.put_many(data)
+        self.assertEqual(count, 100)
+        self.assertEqual(len(self.vault), 100)
+
+    def test_put_many_with_various_types(self):
+        data = {
+            'int': 42,
+            'float': 3.14,
+            'str': 'hello',
+            'list': [1, 2, 3],
+            'dict': {'nested': 'value'},
+            'none': None,
+            'bool': True
+        }
+        count = self.vault.put_many(data)
+        self.assertEqual(count, 7)
+        self.assertEqual(self.vault['int'], 42)
+        self.assertEqual(self.vault['float'], 3.14)
+        self.assertEqual(self.vault['str'], 'hello')
+        self.assertEqual(self.vault['list'], [1, 2, 3])
+        self.assertEqual(self.vault['dict'], {'nested': 'value'})
+        self.assertIsNone(self.vault.get('none'))
+        self.assertTrue(self.vault['bool'])
+
+    def test_get_many_basic(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        self.vault['c'] = 3
+        result = self.vault.get_many(['a', 'b', 'c'])
+        self.assertEqual(result, {'a': 1, 'b': 2, 'c': 3})
+
+    def test_get_many_empty(self):
+        result = self.vault.get_many([])
+        self.assertEqual(result, {})
+
+    def test_get_many_partial_existing(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        result = self.vault.get_many(['a', 'b', 'c', 'd'])
+        self.assertEqual(result, {'a': 1, 'b': 2})
+
+    def test_get_many_none_existing(self):
+        self.vault['a'] = 1
+        result = self.vault.get_many(['x', 'y', 'z'])
+        self.assertEqual(result, {})
+
+    def test_get_many_single_key(self):
+        self.vault['only'] = 'value'
+        result = self.vault.get_many(['only'])
+        self.assertEqual(result, {'only': 'value'})
+
+    def test_pop_many_basic(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        self.vault['c'] = 3
+        result = self.vault.pop_many(['a', 'b'])
+        self.assertEqual(result, {'a': 1, 'b': 2})
+        self.assertEqual(len(self.vault), 1)
+        self.assertIsNone(self.vault.get('a'))
+        self.assertEqual(self.vault['c'], 3)
+
+    def test_pop_many_empty(self):
+        result = self.vault.pop_many([])
+        self.assertEqual(result, {})
+        self.assertEqual(len(self.vault), 0)
+
+    def test_pop_many_partial_existing(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        result = self.vault.pop_many(['a', 'x', 'y'])
+        self.assertEqual(result, {'a': 1})
+        self.assertEqual(len(self.vault), 1)
+        self.assertEqual(self.vault['b'], 2)
+
+    def test_pop_many_none_existing(self):
+        self.vault['a'] = 1
+        result = self.vault.pop_many(['x', 'y', 'z'])
+        self.assertEqual(result, {})
+        self.assertEqual(len(self.vault), 1)
+
+    def test_pop_many_all_items(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        result = self.vault.pop_many(['a', 'b'])
+        self.assertEqual(result, {'a': 1, 'b': 2})
+        self.assertEqual(len(self.vault), 0)
+
+    def test_has_keys_all_present(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        self.vault['c'] = 3
+        result = self.vault.has_keys(['a', 'b', 'c'])
+        self.assertTrue(result)
+
+    def test_has_keys_empty_list(self):
+        result = self.vault.has_keys([])
+        self.assertTrue(result)
+
+    def test_has_keys_partial_missing(self):
+        self.vault['a'] = 1
+        self.vault['b'] = 2
+        result = self.vault.has_keys(['a', 'b', 'c'])
+        self.assertFalse(result)
+
+    def test_has_keys_none_present(self):
+        self.vault['a'] = 1
+        result = self.vault.has_keys(['x', 'y', 'z'])
+        self.assertFalse(result)
+
+    def test_has_keys_single_key_present(self):
+        self.vault['only'] = 'value'
+        result = self.vault.has_keys(['only'])
+        self.assertTrue(result)
+
+    def test_has_keys_single_key_missing(self):
+        self.vault['a'] = 'value'
+        result = self.vault.has_keys(['missing'])
+        self.assertFalse(result)
+
+    def test_bulk_operations_thread_safe(self):
+        v = Vault('bulk_thread_test', thread_safe=True)
+        errors = []
+
+        def worker_put(start, end):
+            try:
+                data = {f'key_{i}': f'value_{i}' for i in range(start, end)}
+                v.put_many(data)
+            except Exception as e:
+                errors.append(e)
+
+        def worker_get(keys):
+            try:
+                v.get_many(keys)
+            except Exception as e:
+                errors.append(e)
+
+        threads = []
+        for i in range(4):
+            t = threading.Thread(target=worker_put, args=(i * 25, (i + 1) * 25))
+            threads.append(t)
+
+        for t in threads:
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(errors), 0)
+        self.assertEqual(len(v), 100)
+        v.delete_vault()
+
+    def test_bulk_mixed_operations(self):
+        self.vault.put_many({'a': 1, 'b': 2, 'c': 3})
+        self.assertEqual(len(self.vault), 3)
+
+        result = self.vault.get_many(['a', 'b'])
+        self.assertEqual(result, {'a': 1, 'b': 2})
+
+        self.assertTrue(self.vault.has_keys(['a', 'b', 'c']))
+
+        removed = self.vault.pop_many(['a', 'b'])
+        self.assertEqual(removed, {'a': 1, 'b': 2})
+
+        self.assertEqual(len(self.vault), 1)
+        self.assertFalse(self.vault.has_keys(['a', 'b']))
+        self.assertTrue(self.vault.has_keys(['c']))
 
 
 if __name__ == '__main__':

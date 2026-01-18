@@ -19,16 +19,48 @@ log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
 log.addHandler(handler)
 
+_custom_logger = None
+
 root_path = os.path.dirname(os.path.abspath(__file__))
 vaults_folder = os.path.join(root_path, "vaults")
 
 
 def set_root_path(path: str) -> None:
+    """Set the root directory for vault storage.
+
+    Creates the vaults subdirectory if it doesn't exist.
+
+    Args:
+        path: Directory path where vault files will be stored.
+
+    Example:
+        >>> set_root_path('/data/vaults')
+    """
     global root_path, vaults_folder
     root_path = path
     vaults_folder = os.path.join(root_path, "vaults")
     os.makedirs(vaults_folder, exist_ok=True)
     log.info(f"Root path set to: {root_path}, vaults folder: {vaults_folder}")
+
+
+def set_logger(logger: logging.Logger) -> None:
+    """Configure a custom logger for the vaults module.
+
+    By default, vaults uses its own logger. Call this function to redirect
+    logs to your application's logger.
+
+    Args:
+        logger: Logger instance to use for vault operations.
+
+    Example:
+        >>> import logging
+        >>> my_logger = logging.getLogger('vaults')
+        >>> set_logger(my_logger)
+    """
+    global log, _custom_logger
+    _custom_logger = logger
+    log = logger
+    log.info("Custom logger configured for vaults module.")
 
 
 def _try_msgpack_serialize(obj: Any) -> Optional[bytes]:
@@ -54,10 +86,15 @@ def _deserialize(data: bytes) -> Any:
     if marker == b'M':
         if not MSGPACK_AVAILABLE:
             raise RuntimeError("msgpack not available but data is msgpack format")
-        return msgpack.unpackb(data[1:], raw=False)
+        result = msgpack.unpackb(data[1:], raw=False)
     elif marker == b'P':
-        return pickle.loads(data[1:])
-    raise ValueError(f"Unknown serialization format marker: {marker}")
+        result = pickle.loads(data[1:])
+    else:
+        raise ValueError(f"Unknown serialization format marker: {marker}")
+
+    if isinstance(result, tuple):
+        return list(result)
+    return result
 
 
 class VaultError(Exception):
@@ -65,9 +102,37 @@ class VaultError(Exception):
 
 
 class Vault:
+    """Persistent key-value store backed by SQLite.
+
+    Provides a dict-like interface with thread-safe operations and automatic
+    serialization using msgpack (with pickle fallback).
+
+    Args:
+        vault_name: Name of the vault (creates `name.db` file).
+        to_create: If False, raises VaultError if vault doesn't exist.
+        thread_safe: If True, uses RLock for concurrent access.
+
+    Example:
+        >>> from vaults import Vault, set_root_path
+        >>> set_root_path('/data')
+        >>> v = Vault('my_data')
+        >>> v['key'] = 'value'
+        >>> v.get('key')
+        'value'
+    """
     __slots__ = {"vault_name", "db_path", "_connection", "_thread_safe", "_lock"}
 
     def __init__(self, vault_name: str, to_create: bool = True, thread_safe: bool = False) -> None:
+        """Initialize a Vault instance.
+
+        Args:
+            vault_name: Name of the vault (creates `name.db` file).
+            to_create: If False, raises VaultError if vault doesn't exist.
+            thread_safe: If True, uses RLock for concurrent access.
+
+        Raises:
+            VaultError: If vault doesn't exist and to_create is False.
+        """
         os.makedirs(vaults_folder, exist_ok=True)
         self.vault_name = vault_name
         self.db_path = os.path.join(vaults_folder, f"{vault_name}.db")
@@ -160,6 +225,149 @@ class Vault:
     def pop(self, key: Any) -> Optional[Any]:
         value = self._pop(key)
         return value
+
+    def put_many(self, data: Dict[Any, Any]) -> int:
+        """Bulk insert or update multiple key-value pairs.
+
+        Uses a single transaction for atomicity and efficiency.
+
+        Args:
+            data: Dictionary of key-value pairs to store.
+
+        Returns:
+            Number of items inserted/updated.
+
+        Example:
+            >>> v.put_many({'a': 1, 'b': 2, 'c': 3})
+            3
+        """
+        log.debug(f"put_many: Bulk inserting {len(data)} items into vault '{self.vault_name}'.")
+        if not data:
+            log.info("put_many: No data to insert.")
+            return 0
+
+        serialized_items = [(_serialize(k), _serialize(v)) for k, v in data.items()]
+
+        if self._lock:
+            with self._lock:
+                cursor = self._connection.cursor()
+                cursor.executemany(
+                    "INSERT OR REPLACE INTO dict (key, value) VALUES (?, ?)",
+                    serialized_items
+                )
+        else:
+            cursor = self._connection.cursor()
+            cursor.executemany(
+                "INSERT OR REPLACE INTO dict (key, value) VALUES (?, ?)",
+                serialized_items
+            )
+
+        log.info(f"put_many: Inserted {len(serialized_items)} items into vault '{self.vault_name}'.")
+        return len(serialized_items)
+
+    def get_many(self, keys: List[Any]) -> Dict[Any, Any]:
+        """Bulk fetch multiple values by keys.
+
+        Returns only keys that exist in the vault.
+
+        Args:
+            keys: List of keys to retrieve.
+
+        Returns:
+            Dictionary containing only existing key-value pairs.
+
+        Example:
+            >>> v.put_many({'a': 1, 'b': 2, 'c': 3})
+            >>> v.get_many(['a', 'b', 'missing'])
+            {'a': 1, 'b': 2}
+        """
+        log.debug(f"get_many: Fetching {len(keys)} keys from vault '{self.vault_name}'.")
+        if not keys:
+            log.info("get_many: No keys to fetch.")
+            return {}
+
+        serialized_keys = [_serialize(k) for k in keys]
+        placeholders = ','.join('?' * len(serialized_keys))
+
+        cursor = self._execute(
+            f"SELECT key, value FROM dict WHERE key IN ({placeholders})",
+            tuple(serialized_keys)
+        )
+
+        result = {(_deserialize(row[0])): _deserialize(row[1]) for row in cursor.fetchall()}
+        log.info(f"get_many: Retrieved {len(result)} items from vault '{self.vault_name}'.")
+        return result
+
+    def pop_many(self, keys: List[Any]) -> Dict[Any, Any]:
+        """Bulk remove and return multiple key-value pairs.
+
+        Logs a warning for keys that don't exist.
+
+        Args:
+            keys: List of keys to remove.
+
+        Returns:
+            Dictionary of removed key-value pairs.
+
+        Example:
+            >>> v.put_many({'a': 1, 'b': 2})
+            >>> v.pop_many(['a'])
+            {'a': 1}
+        """
+        log.debug(f"pop_many: Bulk removing {len(keys)} keys from vault '{self.vault_name}'.")
+        if not keys:
+            log.info("pop_many: No keys to remove.")
+            return {}
+
+        found = self.get_many(keys)
+        if not found:
+            log.warning("pop_many: No keys found to remove.")
+            return {}
+
+        serialized_keys = [_serialize(k) for k in found.keys()]
+        placeholders = ','.join('?' * len(serialized_keys))
+
+        self._execute(
+            f"DELETE FROM dict WHERE key IN ({placeholders})",
+            tuple(serialized_keys)
+        )
+
+        log.info(f"pop_many: Removed {len(found)} items from vault '{self.vault_name}'.")
+        return found
+
+    def has_keys(self, keys: List[Any]) -> bool:
+        """Check if all specified keys exist in the vault.
+
+        Args:
+            keys: List of keys to check.
+
+        Returns:
+            True if all keys exist, False otherwise. Empty list returns True.
+
+        Example:
+            >>> v.put_many({'a': 1, 'b': 2})
+            >>> v.has_keys(['a', 'b'])
+            True
+            >>> v.has_keys(['a', 'c'])
+            False
+        """
+        log.debug(f"has_keys: Checking {len(keys)} keys in vault '{self.vault_name}'.")
+        if not keys:
+            log.info("has_keys: No keys to check.")
+            return True
+
+        serialized_keys = [_serialize(k) for k in keys]
+        placeholders = ','.join('?' * len(serialized_keys))
+
+        cursor = self._execute(
+            f"SELECT COUNT(*) FROM dict WHERE key IN ({placeholders})",
+            tuple(serialized_keys)
+        )
+
+        count = cursor.fetchone()[0]
+        all_present = count == len(keys)
+        log.info(f"has_keys: Checked {len(keys)} keys in vault '{self.vault_name}'. All present: {all_present}.")
+        return all_present
 
     def popitem(self) -> Tuple[Any, Any]:
         log.debug(f"Popping arbitrary item from vault.")
